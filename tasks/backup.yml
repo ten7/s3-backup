@@ -1,0 +1,118 @@
+---
+- name: Ensure the backup has required parameters
+  fail:
+    msg: "Could not find s3 Backup, or missing required parameters"
+  when:
+    - _backup.source | default('') == ''
+    - _backup.remotes | default([]) | length < 1
+- debug: var=_backup
+  when:
+    - s3_backup.debug | default(false) == true
+- name: Check if the source configuration exists
+  fail:
+    msg: "Could not find source configuration {{ _backup.source }}"
+  when:
+    - s3_backup.sources[_backup.source] is not defined
+- name: Get the source configuration
+  set_fact:
+    _source: "{{ s3_backup.sources[_backup.source] }}"
+- name: Check if the S3 access key is provided
+  fail:
+    msg: "Could not find S3 access key for {{ _backup.source }}"
+  when:
+    - _source.accessKey is not defined
+    - _source.accessKeyFile is not defined
+- name: Check if the S3 secret key is provided
+  fail:
+    msg: "Could not find SSH keys for {{ _backup.source }}"
+  when:
+    - _source.secretKey is not defined
+    - _source.secretKeyFile is not defined
+- name: Create a tempfile for the rclone config
+  tempfile:
+    prefix: "s3-backup-files-"
+    suffix: ".conf"
+    state: file
+  register: _rclone_conf
+- name: Template the rclone conf
+  copy:
+    content: |
+      [source]
+      type = s3
+      provider = {{ _source.provider | default('AWS') }}
+      env_auth = false
+      access_key_id = {% if _source.accessKeyFile is defined %}{{ lookup('file', _source.accessKeyFile) }}{% else %}{{ _source.accessKey | default(omit) }}{% endif %}{{ ' ' }}
+      secret_access_key = {% if _source.secretKeyFile is defined %}{{ lookup('file', _source.secretKeyFile) }}{% else %}{{ _source.secretKey | default(omit) }}{% endif %}{{ ' ' }}
+      endpoint = {{ _source.endpoint | default('') | regex_replace('[A-z]*://', '') }}
+      region = {{ _source.region | default('') }}
+      acl = {{ _source.acl | default('private') }}
+
+      {% for _target in _backup.targets %}
+      {% set _remote = s3_backup.remotes[_target.remote] %}
+      {% if _remote.type | default('') == 's3' %}
+      [{{ _target.remote | regex_replace('[^A-Za-z0-9]', '-') }}]
+      type = s3
+      provider = {{ _remote.provider | default('AWS') }}
+      env_auth = false
+      access_key_id = {% if _remote.accessKeyFile is defined %}{{ lookup('file', _remote.accessKeyFile) }}{% else %}{{ _remote.accessKey | default(omit) }}{% endif %}{{ ' ' }}
+      secret_access_key = {% if _remote.secretKeyFile is defined %}{{ lookup('file', _remote.secretKeyFile) }}{% else %}{{ _remote.secretKey | default(omit) }}{% endif %}{{ ' ' }}
+      endpoint = {{ _remote.endpoint | default('') | regex_replace('[A-z]*://', '') }}
+      region = {{ _remote.region | default('') }}
+      acl = {{ _remote.acl | default('private') }}
+      
+      {% elif _remote.type | default('') == 'sftp' %}
+      [{{ _target.remote | regex_replace('[^A-Za-z0-9]', '-') }}]
+      type = sftp
+      host = {{ _remote.host }}
+      user = {{ _remote.user }}
+      key_file = {{ _remote.keyFile }}
+      copy_links = false
+      links = false
+      skip_links = true
+      no_check_updated = true
+      case_sensitive = true
+      case_insensitive = false
+      
+      {% endif %}
+      {% endfor %}
+    dest: "{{ _rclone_conf.path }}"
+- debug: 
+    msg: "{{ lookup('file', _rclone_conf.path) }}"
+  when:
+    - s3_backup.debug | default(false) == true
+- name: Sync files using rclone
+  shell: >
+    {{ s3_backup.rclonePath | default('rclone') }} sync
+    source:{{ _source.bucket }}/{{ _backup.path | default('') }}
+    {{ _target.remote | regex_replace('[^A-Za-z0-9]', '-') }}:{% if _remote.bucket is defined %}{{ _remote.bucket }}/{% endif %}{{ _target.path | default('') }}
+    --config="{{ _rclone_conf.path }}"
+    {% for _exclude in _backup.excludes | default([]) %}
+    --exclude="{{ _exclude }}"{{ '' }}
+    {% endfor %}
+    {% if _backup.delete | default(true) %}
+    --delete-during
+    {% endif %}
+    {% if (s3_backup.debug | default(false)) != true %}
+    --quiet
+    {% else %}
+    --verbose="4"
+    {% endif %}
+  loop: "{{ _backup.targets | default([]) }}"                                         
+  loop_control:                                                                            
+    label: "{{ _target.remote }}"
+    loop_var: _target
+  when:
+    - _target.disabled | default(false) == false
+  vars:
+    _remote: "{{ s3_backup.remotes[_target.remote] }}"
+  register: _s3_backup_rclone_sync
+  until: _s3_backup_rclone_sync.rc == 0
+  retries: "{{ _source.retryCount | default(3) }}"
+  delay: "{{ _source.retryDelay | default(30) }}"
+  no_log: "{{ s3_backup.debug | default(false) | ternary(false, true) }}"
+- name: Delete the rclone.conf
+  file:
+    path: "{{ _rclone_conf.path }}"
+    state: absent
+- include_tasks: "httpPing.yml"
+

@@ -1,0 +1,27 @@
+---
+- name: Smoke test the environment.
+  fail:
+    msg: "Could not find s3_backup, or missing required parameters"
+  when:
+    - s3_backup | default({}) | length < 1
+    - s3_backup.sources | default([]) | length < 1
+    - s3_backup.destinations | default([]) | length < 1
+    - s3_backup.backups | default([]) | length < 1
+- name: Create a temp directory to hold the backup
+  tempfile:
+    state: directory
+    prefix: "s3-backup"
+  register: _run_temp_dir
+  notify:
+    - delete temp items
+- name: Do backups
+  include_tasks: "backup.yml"
+  loop: "{{ s3_backup.backups }}"
+  loop_control:
+    extended: yes
+    label: "{{ _backup.name | default(ansible_loop.index0) }}"
+    loop_var: _backup
+  when:
+    - _backup.disabled | default(false) != true
+  ignore_errors: "{{ s3_backup.stopOnFailure | default(false) | bool }}"
+

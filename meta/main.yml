@@ -1,0 +1,16 @@
+galaxy_info:
+  author: socketwench
+  description: Clone your S3 buckets to another bucket or an SFTP server
+  company: TEN7 Interactive
+  issue_tracker_url: https://github.com/ten7/s3-backup/issues
+  license: GPL-3.0-only
+  min_ansible_version: 2.8
+  platforms:
+   - name: Linux
+     versions:
+     - all
+
+  galaxy_tags: ['backup', 'website', 's3']
+
+dependencies: []
+
